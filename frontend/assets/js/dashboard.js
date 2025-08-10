@@ -1,112 +1,103 @@
 document.addEventListener('DOMContentLoaded', () => {
-  // Redirect to login if not logged in
+  // Redirect if not logged in
   if (!localStorage.getItem('airhealthUser')) {
     window.location.href = 'index.html';
     return;
   }
 
-  // Load the user profile from localStorage
   const profile = JSON.parse(localStorage.getItem('airhealthProfile') || '{}');
-  const riskOutput = document.getElementById('risk-output');
 
-  // Helper to pass smoking value as-is (backend expects string)
-  function smokingToFeature(smk) {
-    return smk;
+  // Elements
+  const riskBadge = document.getElementById('risk-badge');
+  const riskProbabilityEl = document.getElementById('risk-probability');
+  const riskSummaryEl = document.getElementById('risk-summary');
+  const adviceListEl = document.getElementById('advice-list');
+  const dataUsedTable = document.getElementById('data-used');
+
+  // Helper (backend expects string)
+  const smokingToFeature = v => v;
+
+  // Central renderer for backend response
+  function renderRisk(d) {
+    // AQI block
+    const aqiEl = document.getElementById('aqi-value');
+    const pm25El = document.getElementById('pm25-value');
+    const pm10El = document.getElementById('pm10-value');
+    const aqiAdviceEl = document.getElementById('aqi-advice');
+
+    if (aqiEl) aqiEl.textContent = d.aqi ?? 'N/A';
+    if (pm25El) pm25El.textContent = d.pm25 ?? 'N/A';
+    if (pm10El) pm10El.textContent = d.pm10 ?? 'N/A';
+    if (aqiAdviceEl) {
+      aqiAdviceEl.textContent =
+        typeof d.aqi === 'number'
+          ? (d.aqi <= 50 ? 'Good air quality.' : 'Air quality is degraded—consider a mask outdoors.')
+          : '';
+    }
+
+    // Risk badge + class
+    const risk = d.risk || d.report?.['Risk Level'] || 'Unknown';
+    if (riskBadge) {
+      riskBadge.textContent = risk;
+      riskBadge.style.display = 'block';
+      riskBadge.classList.remove('status-good','status-warning','status-danger');
+      if (/low/i.test(risk)) riskBadge.classList.add('status-good');
+      else if (/moderate|medium/i.test(risk)) riskBadge.classList.add('status-warning');
+      else riskBadge.classList.add('status-danger');
+    }
+
+    // Probability
+    const prob = d.risk_probability ?? d.report?.['Risk Probability (%)'];
+    if (riskProbabilityEl) {
+      riskProbabilityEl.textContent = (typeof prob === 'number') ? `Risk Probability: ${prob}%` : '';
+    }
+
+    // Summary
+    if (riskSummaryEl) {
+      riskSummaryEl.textContent = d.report?.Summary || `Estimated status: ${risk}.`;
+    }
+
+    // Advice list
+    const adviceArr = d.advice || d.report?.['Personalized Advice'] || [];
+    if (adviceListEl) {
+      adviceListEl.innerHTML = '';
+      (Array.isArray(adviceArr) ? adviceArr : [adviceArr])
+        .filter(Boolean)
+        .forEach(line => {
+          const li = document.createElement('li');
+          li.textContent = String(line).replace(/^\s*[\u2022\-]\s*/, ''); // strip leading bullets
+          adviceListEl.appendChild(li);
+        });
+    }
+
+    // Data Used table
+    const used = d.report?.['Data Used'] || {};
+    if (dataUsedTable) {
+      dataUsedTable.innerHTML = '';
+      Object.entries(used).forEach(([k, v]) => {
+        const tr = document.createElement('tr');
+        const th = document.createElement('th'); th.textContent = k;
+        const td = document.createElement('td'); td.textContent = v;
+        tr.append(th, td);
+        dataUsedTable.appendChild(tr);
+      });
+    }
   }
 
-  // Calculate Risk button click handler
-  document.getElementById('calculate-risk-btn').addEventListener('click', (event) => {
-    event.preventDefault();
-
-    // Get profile values
-    const location = profile.location;
-    let ageVal = Number(profile.age);
-    if (isNaN(ageVal) || ageVal <= 0) ageVal = 30; // default age if missing
-    const chronicResp = profile.chronicRespiratory || 'none';
-    const heartDisease = profile.heartDisease || 'none';
-    const smokingVal = profile.smoking;
-
-    // Wearable inputs (optional)
-    const hrInput = document.getElementById('wearable-hr-input').value;
-    const spo2Input = document.getElementById('wearable-spo2-input').value;
-    const coughInput = document.getElementById('wearable-cough-input').value;
-
-    // Validate required profile info exist
-    if (!location || !chronicResp || !heartDisease || !smokingVal) {
-      riskOutput.style.display = 'block';
-      riskOutput.innerHTML = `<p style="color:red;"><strong>Error:</strong> Please complete your profile with all required health details.</p>`;
-      return;
-    }
-
-    // Build payload
-    const payload = {
-      location: location,
-      age: ageVal,
-      chronic_respiratory: chronicResp.toLowerCase(),
-      heart_disease: heartDisease.toLowerCase(),
-      smoking: smokingToFeature(smokingVal)
-    };
-
-    // Add wearable data if all present
-    if (hrInput && spo2Input && coughInput) {
-      payload.heart_rate = Number(hrInput);
-      payload.spo2 = Number(spo2Input);
-      payload.cough_count = Number(coughInput);
-    }
-
-    riskOutput.style.display = 'block';
-    riskOutput.innerHTML = `<p><em>Calculating risk...</em></p>`;
-
-    console.log('Sending payload to backend:', payload);
-
-    // Call backend health-risk endpoint
-    fetch('http://localhost:5000/health-risk', {
+  // API helper
+  async function callRiskAPI(payload) {
+    const res = await fetch('http://localhost:5000/health-risk', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload)
-    })
-      .then(res => {
-        if (!res.ok) throw new Error('Network response was not ok');
-        return res.json();
-      })
-      .then(data => {
-        console.log('Received risk data:', data);
+    });
+    if (!res.ok) throw new Error('Network response was not ok');
+    return res.json();
+  }
 
-        // Update AQI and pollutant values in UI
-        document.getElementById('aqi-value').textContent = data.aqi ?? 'N/A';
-        document.getElementById('pm25-value').textContent = data.pm25 ?? 'N/A';
-        document.getElementById('pm10-value').textContent = data.pm10 ?? 'N/A';
-        document.getElementById('aqi-advice').textContent =
-          data.aqi <= 50 ? 'Good air quality.' : 'Poor air quality – wear a mask.';
-
-        // Show detailed risk info with styled text and advice list
-        riskOutput.innerHTML = `
-          <h2 style="color:${data.risk === 'Low Risk' ? 'green' : 'red'}; margin-bottom: 0.8em;">
-            ${data.risk ?? 'N/A'}
-          </h2>
-          <p><strong>Risk Probability:</strong> ${data.risk_probability ? data.risk_probability + '%' : 'N/A'}</p>
-          <p><strong>Summary:</strong> ${data.report && data.report.Summary ? data.report.Summary : ''}</p>
-          <h4>Personalized Advice:</h4>
-          <ul>
-            ${
-              Array.isArray(data.advice)
-                ? data.advice.map(item => `<li>${item.replace(/^\u2022\s*/, '')}</li>`).join('')
-                : `<li>${data.advice}</li>`
-            }
-          </ul>
-        `;
-        riskOutput.scrollIntoView({behavior: 'smooth'});
-      })
-      .catch(err => {
-        console.error('Error fetching health risk data:', err);
-        riskOutput.style.display = 'block';
-        riskOutput.innerHTML = `<p style="color:red;"><strong>Error:</strong> Failed to fetch health risk data. Please try again.</p>`;
-      });
-  });
-
-  // Sync Wearable Data button click handler
-  document.getElementById('sync-wearable').addEventListener('click', (event) => {
-    event.preventDefault();
+  // Calculate Risk
+  document.getElementById('calculate-risk-btn')?.addEventListener('click', async (e) => {
+    e.preventDefault();
 
     const location = profile.location;
     let ageVal = Number(profile.age);
@@ -116,95 +107,121 @@ document.addEventListener('DOMContentLoaded', () => {
     const smokingVal = profile.smoking;
 
     if (!location || !chronicResp || !heartDisease || !smokingVal) {
-      riskOutput.style.display = 'block';
-      riskOutput.innerHTML = `<p style="color:red;"><strong>Error:</strong> Please complete your profile with all required health details.</p>`;
+      if (riskBadge) {
+        riskBadge.style.display = 'block';
+        riskBadge.textContent = 'Error: Please complete your profile.';
+        riskBadge.classList.remove('status-good','status-warning','status-danger');
+        riskBadge.classList.add('status-danger');
+      }
       return;
     }
 
-    riskOutput.style.display = 'block';
-    riskOutput.innerHTML = '<p><em>Syncing wearable data...</em></p>';
+    const hr = document.getElementById('wearable-hr-input')?.value;
+    const s2 = document.getElementById('wearable-spo2-input')?.value;
+    const cc = document.getElementById('wearable-cough-input')?.value;
 
-    // Fetch simulated wearable data and then recalc risk with it
-    fetch('http://localhost:5000/health-risk', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        location: location,
+    const payload = {
+      location,
+      age: ageVal,
+      chronic_respiratory: chronicResp.toLowerCase(),
+      heart_disease: heartDisease.toLowerCase(),
+      smoking: smokingToFeature(smokingVal)
+    };
+    if (hr && s2 && cc) {
+      payload.heart_rate = Number(hr);
+      payload.spo2 = Number(s2);
+      payload.cough_count = Number(cc);
+    }
+
+    if (riskBadge) {
+      riskBadge.style.display = 'block';
+      riskBadge.textContent = 'Calculating risk...';
+      riskBadge.classList.remove('status-good','status-warning','status-danger');
+    }
+
+    try {
+      const data = await callRiskAPI(payload);
+      renderRisk(data);
+      riskBadge?.scrollIntoView({ behavior: 'smooth' });
+    } catch (err) {
+      console.error(err);
+      if (riskBadge) {
+        riskBadge.textContent = 'Error: Failed to fetch health risk data.';
+        riskBadge.classList.add('status-danger');
+      }
+    }
+  });
+
+  // Sync Wearable Data
+  document.getElementById('sync-wearable')?.addEventListener('click', async (e) => {
+    e.preventDefault();
+
+    const location = profile.location;
+    let ageVal = Number(profile.age);
+    if (isNaN(ageVal) || ageVal <= 0) ageVal = 30;
+    const chronicResp = profile.chronicRespiratory || 'none';
+    const heartDisease = profile.heartDisease || 'none';
+    const smokingVal = profile.smoking;
+
+    if (!location || !chronicResp || !heartDisease || !smokingVal) {
+      if (riskBadge) {
+        riskBadge.style.display = 'block';
+        riskBadge.textContent = 'Error: Please complete your profile.';
+        riskBadge.classList.remove('status-good','status-warning','status-danger');
+        riskBadge.classList.add('status-danger');
+      }
+      return;
+    }
+
+    if (riskBadge) {
+      riskBadge.style.display = 'block';
+      riskBadge.textContent = 'Syncing wearable data...';
+      riskBadge.classList.remove('status-good','status-warning','status-danger');
+    }
+
+    try {
+      // First call to get wearable-like values
+      const baseData = await callRiskAPI({
+        location,
         age: ageVal,
         chronic_respiratory: chronicResp.toLowerCase(),
         heart_disease: heartDisease.toLowerCase(),
         smoking: smokingVal
-      })
-    })
-      .then(res => {
-        if (!res.ok) throw new Error('Network response was not ok');
-        return res.json();
-      })
-      .then(data => {
-        console.log('Wearable sync response:', data);
-
-        // Fill wearable inputs with simulated data
-        document.getElementById('wearable-hr-input').value = data.heart_rate ?? '';
-        document.getElementById('wearable-spo2-input').value = data.spo2 ?? '';
-        document.getElementById('wearable-cough-input').value = data.cough_count ?? '';
-
-        // Now recalc risk including wearable data
-        const payload = {
-          location: location,
-          age: ageVal,
-          chronic_respiratory: chronicResp.toLowerCase(),
-          heart_disease: heartDisease.toLowerCase(),
-          smoking: smokingVal,
-          heart_rate: data.heart_rate,
-          spo2: data.spo2,
-          cough_count: data.cough_count
-        };
-
-        return fetch('http://localhost:5000/health-risk', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify(payload)
-        });
-      })
-      .then(res2 => {
-        if (!res2.ok) throw new Error('Network response was not ok');
-        return res2.json();
-      })
-      .then(riskData => {
-        console.log('Final risk data:', riskData);
-
-        document.getElementById('aqi-value').textContent = riskData.aqi ?? 'N/A';
-        document.getElementById('pm25-value').textContent = riskData.pm25 ?? 'N/A';
-        document.getElementById('pm10-value').textContent = riskData.pm10 ?? 'N/A';
-        document.getElementById('aqi-advice').textContent =
-          riskData.aqi <= 50 ? 'Good air quality.' : 'Poor air quality – wear a mask.';
-
-        riskOutput.innerHTML = `
-          <h2 style="color:${riskData.risk === 'Low Risk' ? 'green' : 'red'}; margin-bottom: 0.8em;">
-            ${riskData.risk ?? 'N/A'}
-          </h2>
-          <p><strong>Risk Probability:</strong> ${riskData.risk_probability ? riskData.risk_probability + '%' : 'N/A'}</p>
-          <p><strong>Summary:</strong> ${riskData.report && riskData.report.Summary ? riskData.report.Summary : ''}</p>
-          <h4>Personalized Advice:</h4>
-          <ul>
-            ${
-              Array.isArray(riskData.advice)
-                ? riskData.advice.map(item => `<li>${item.replace(/^\u2022\s*/, '')}</li>`).join('')
-                : `<li>${riskData.advice}</li>`
-            }
-          </ul>
-        `;
-        riskOutput.scrollIntoView({behavior: 'smooth'});
-      })
-      .catch(error => {
-        console.error('Error fetching wearable/risk data:', error);
-        riskOutput.style.display = 'block';
-        riskOutput.innerHTML = `<p style="color:red;"><strong>Error:</strong> Failed to fetch health risk data. Please try again.</p>`;
       });
+
+      // Fill inputs
+      const hrEl = document.getElementById('wearable-hr-input');
+      const s2El = document.getElementById('wearable-spo2-input');
+      const ccEl = document.getElementById('wearable-cough-input');
+      if (hrEl) hrEl.value = baseData.heart_rate ?? '';
+      if (s2El) s2El.value = baseData.spo2 ?? '';
+      if (ccEl) ccEl.value = baseData.cough_count ?? '';
+
+      // Second call including wearable data
+      const finalData = await callRiskAPI({
+        location,
+        age: ageVal,
+        chronic_respiratory: chronicResp.toLowerCase(),
+        heart_disease: heartDisease.toLowerCase(),
+        smoking: smokingVal,
+        heart_rate: baseData.heart_rate,
+        spo2: baseData.spo2,
+        cough_count: baseData.cough_count
+      });
+
+      renderRisk(finalData);
+      riskBadge?.scrollIntoView({ behavior: 'smooth' });
+    } catch (err) {
+      console.error(err);
+      if (riskBadge) {
+        riskBadge.textContent = 'Error: Failed to fetch health risk data.';
+        riskBadge.classList.add('status-danger');
+      }
+    }
   });
 
-  // Logout handler
-  document.getElementById('logout-btn').addEventListener('click', () => {
+  // Logout
+  document.getElementById('logout-btn')?.addEventListener('click', () => {
     localStorage.removeItem('airhealthUser');
     window.location.href = 'index.html';
   });
